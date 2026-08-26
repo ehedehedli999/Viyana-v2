@@ -12,16 +12,20 @@ from telegram.ext import (
 )
 from groq import Groq
 
+# Logging Ayarları
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Ortam Değişkenleri (Render büyük/küçük harf veya alt çizgi farklarına karşı esnek kontrol)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("GROQAPIKEY") or os.getenv("groq_api_key")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "123456")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Groq İstemcisi
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
+# OYUNCU LİSTESİ VE TELEGRAM ID'LERİ
 PLAYERS = {
     "ehed": "123456789",
     "sabina": "987654321",
@@ -34,6 +38,7 @@ PLAYERS = {
     "vasya": "667788990"
 }
 
+# Botun Anlık Savaş Durum Hafızası
 bot_state = {
     "is_active": False,
     "authenticated_admins": set()
@@ -43,7 +48,7 @@ SYSTEM_PROMPT = f"""
 Sen VIYANA V3 Savaş Koordinasyon ve Asistan Yapay Zekasısın.
 Kullanıcı seninle sohbet edebilir, soru sorabilir veya savaş talimatı verebilir.
 
-Tanımlı Oyuncu Listesi ve ID'leri:
+Tanımlı Oyuncu Listesi ve Telegram ID'leri:
 {PLAYERS}
 
 Kurallar:
@@ -66,6 +71,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if update.message.chat.type != "private":
+        await update.message.reply_text("⚠️ Admin paneline sadece özel sohbetten erişebilirsiniz.")
         return
 
     if user_id in bot_state["authenticated_admins"]:
@@ -74,6 +80,10 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔑 Lütfen Admin şifresini giriniz:")
 
 async def process_ai_with_groq(prompt: str) -> str:
+    """Groq Llama-3.3 70B Modeli İle Yanıt Oluşturma"""
+    if not GROQ_API_KEY or not groq_client:
+        return "⚠️ GROQ_API_KEY bulunamadı! Lütfen Render panelinde Environment Variables kısmına GROQ_API_KEY anahtarını ekleyin."
+
     try:
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -87,9 +97,13 @@ async def process_ai_with_groq(prompt: str) -> str:
         return response.choices[0].message.content
     except Exception as e:
         logger.error(f"Groq Chat Hatası: {e}")
-        return "⚠️ AI sistemine ulaşılamıyor. Lütfen GROQ_API_KEY değerini kontrol edin."
+        return f"⚠️ Groq Bağlantı Hatası: {e}"
 
 async def transcribe_voice(file_path: str) -> str:
+    """Groq Whisper-Large-V3 İle Ses Kaydını Çözümleme"""
+    if not GROQ_API_KEY or not groq_client:
+        return None
+
     try:
         with open(file_path, "rb") as file:
             transcription = groq_client.audio.transcriptions.create(
@@ -116,6 +130,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "stop_war":
         bot_state["is_active"] = False
         await query.message.reply_text("🔴 Savaş modu durduruldu.")
+        if GROUP_CHAT_ID:
+            await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="🏁 **SAVAŞ BİTTİ!** Katılan tüm savaşçılara teşekkürler.", parse_mode="Markdown")
 
     elif query.data == "status_report":
         status_msg = f"📊 **Mevcut Savaş Durumu:** {'🟢 AKTİF' if bot_state['is_active'] else '🔴 KAPALI'}"
@@ -126,7 +142,7 @@ async def handle_private_messages(update: Update, context: ContextTypes.DEFAULT_
     if update.message.chat.type != "private":
         return
 
-    # Şifre Girişi
+    # Şifre Giriş Kontrolü
     if user_id not in bot_state["authenticated_admins"]:
         if update.message.text == ADMIN_PASSWORD:
             bot_state["authenticated_admins"].add(user_id)
@@ -156,11 +172,11 @@ async def handle_private_messages(update: Update, context: ContextTypes.DEFAULT_
     else:
         prompt_text = update.message.text
 
-    # AI Yanıtı (Her mesaja doğrudan yanıt verir)
+    # AI Yanıtı
     ai_response = await process_ai_with_groq(prompt_text)
     await update.message.reply_text(ai_response, parse_mode="Markdown")
 
-    # Eğer kadro veya savaş emri içeriyorsa gruba da gönder
+    # Eğer savaş veya kadro bildirimi içeriyorsa gruba da aktar
     if GROUP_CHAT_ID and any(k in prompt_text.lower() for k in ["saldırı", "savunma", "takım", "kadro", "savaş"]):
         try:
             await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=ai_response, parse_mode="Markdown")
@@ -176,7 +192,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_private_messages))
 
-    logger.info("VIYANA V3 Bot Başlatılıyor...")
+    logger.info("VIYANA V3 Groq Bot Başlatılıyor...")
     app.run_polling()
 
 if __name__ == "__main__":
