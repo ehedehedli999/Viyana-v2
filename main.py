@@ -31,9 +31,9 @@ from telegram.ext import (
 # ENVIRONMENT VARIABLES
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = os.getenv("8916820174:AAFJPiCyKIq7liSmZPkchyxMx2P0GxLLDt8")
-NVIDIA_API_KEY = os.getenv("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")
-ADMIN_PASSWORD = os.getenv("ehed1995")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
 
 # ============================================================
