@@ -16,7 +16,7 @@ from groq import Groq
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Ortam Değişkenleri (Render büyük/küçük harf veya alt çizgi farklarına karşı esnek kontrol)
+# Ortam Değişkenleri
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("GROQAPIKEY") or os.getenv("groq_api_key")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "123456")
@@ -80,27 +80,39 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔑 Lütfen Admin şifresini giriniz:")
 
 async def process_ai_with_groq(prompt: str) -> str:
-    """Groq Llama-3.3 70B Modeli İle Yanıt Oluşturma"""
+    """Groq API İle Yanıt Oluşturma (Yedekli Model Desteği)"""
     if not GROQ_API_KEY or not groq_client:
-        return "⚠️ GROQ_API_KEY bulunamadı! Lütfen Render panelinde Environment Variables kısmına GROQ_API_KEY anahtarını ekleyin."
+        return "⚠️ GROQ_API_KEY bulunamadı! Lütfen Render panelinde Environment Variables kısmına GROQ_API_KEY ekleyin."
 
-    try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.6,
-            max_tokens=1024
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"Groq Chat Hatası: {e}")
-        return f"⚠️ Groq Bağlantı Hatası: {e}"
+    # Groq'ta aktif olan modeller (Sırayla denenir)
+    models_to_try = [
+        "llama-3.3-70b-versatile",
+        "llama3-70b-8192",
+        "llama-3.1-8b-instant"
+    ]
+
+    last_error = None
+
+    for model_name in models_to_try:
+        try:
+            response = groq_client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.6,
+                max_tokens=1024
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.warning(f"Model {model_name} ile yanıt alınamadı, diğeri deneniyor... Hata: {e}")
+            last_error = e
+
+    return f"⚠️ Groq Bağlantı Hatası: Tüm modeller başarısız oldu. Son hata: {last_error}"
 
 async def transcribe_voice(file_path: str) -> str:
-    """Groq Whisper-Large-V3 İle Ses Kaydını Çözümleme"""
+    """Groq Whisper İle Ses Kaydını Çözümleme"""
     if not GROQ_API_KEY or not groq_client:
         return None
 
