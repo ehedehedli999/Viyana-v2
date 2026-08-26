@@ -80,15 +80,15 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔑 Lütfen Admin şifresini giriniz:")
 
 async def process_ai_with_groq(prompt: str) -> str:
-    """Groq API İle Yanıt Oluşturma (Yedekli Model Desteği)"""
+    """Groq API İle Yanıt Oluşturma (Güncel Model Desteği)"""
     if not GROQ_API_KEY or not groq_client:
         return "⚠️ GROQ_API_KEY bulunamadı! Lütfen Render panelinde Environment Variables kısmına GROQ_API_KEY ekleyin."
 
-    # Groq'ta aktif olan modeller (Sırayla denenir)
+    # Güncel ve çalışan Groq modelleri
     models_to_try = [
         "llama-3.3-70b-versatile",
-        "llama3-70b-8192",
-        "llama-3.1-8b-instant"
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b"
     ]
 
     last_error = None
