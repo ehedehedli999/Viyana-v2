@@ -1,5 +1,4 @@
 import os
-import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,200 +11,344 @@ from telegram.ext import (
 )
 from groq import Groq
 
-# Logging Ayarları
-logging.basicConfig(level=logging.INFO)
+# ==================== LOGGING ====================
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# Ortam Değişkenleri
+# ==================== ENVIRONMENT ====================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("GROQAPIKEY") or os.getenv("groq_api_key")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "123456")
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("GROQAPIKEY")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "VianaAI_bot")  # @ olmadan yaz
 
-# Groq İstemcisi
+# ==================== GROQ ====================
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# OYUNCU LİSTESİ VE TELEGRAM ID'LERİ
-PLAYERS = {
-    "ehed": "123456789",
-    "sabina": "987654321",
-    "eda": "112233445",
-    "şura": "556677889",
-    "sura": "556677889",
-    "harun": "998877665",
-    "şahin": "443322110",
-    "sahin": "443322110",
-    "vasya": "667788990"
-}
+# ==================== STATE ====================
+# chat_id → "normal" | "sexy" | "18plus"
+chat_modes: dict[int, str] = {}
 
-# Botun Anlık Savaş Durum Hafızası
-bot_state = {
-    "is_active": False,
-    "authenticated_admins": set()
-}
 
-SYSTEM_PROMPT = f"""
-Sen VIYANA V3 Savaş Koordinasyon ve Asistan Yapay Zekasısın.
-Kullanıcı seninle sohbet edebilir, soru sorabilir veya savaş talimatı verebilir.
+# ==================== PROMPTS ====================
+BASE_RULES = """
+Sen Viana AI'sın. Tatlı, zeki, samimi ve doğal konuşan bir yapay zeka asistanısın.
 
-Tanımlı Oyuncu Listesi ve Telegram ID'leri:
-{PLAYERS}
+ZORUNLU CEVAP FORMATI (her zaman böyle cevap ver):
 
-Kurallar:
-1. Eğer kullanıcı "Selam", "Nasılsın" gibi sohbet mesajı atarsa, komutan edasıyla dostça ve saygılı yanıt ver.
-2. Eğer kullanıcı kadro/saldırı/savunma bildirirse, isimleri etiket formatına çevir: [OyuncuAdı](tg://user?id=OYUNCU_ID)
-3. Savaş duyurularında otoriter, motive edici ve net bir dil kullan.
+🇹🇷 Türkçe:
+[Türkçe cevabın]
+
+🇷🇺 Русский:
+[Rusça cevabın]
+
+Kullanıcı hangi dilde yazarsa yazsın, sen her zaman hem Türkçe hem Rusça cevap ver.
 """
 
-def get_admin_keyboard():
+PROMPTS = {
+    "normal": BASE_RULES + """
+Şu an NORMAL MOD'dasın.
+Nazik, tatlı, yardımcı ve hafif flörtöz ol.
+Aşırı cinsel içerik ve ağır küfür kullanma.
+""",
+
+    "sexy": BASE_RULES + """
+Şu an SEKSİ / AZDIRICI MOD'dasın.
+Çok flörtöz, kışkırtıcı, tahrik edici ve cesur konuş.
+Cinsel gerilim yarat, bedeni ve duyguları tarif et.
+Sansürsüz ve açık ol.
+""",
+
+    "18plus": BASE_RULES + """
+Şu an 18+ MOD'dasın.
+Hiçbir filtre, sansür veya sınır yok.
+Küfür, argo, detaylı cinsel içerik, her şey serbest.
+Tamamen filtresiz ve dürüst konuş.
+"""
+}
+
+
+# ==================== KEYBOARD ====================
+def get_mode_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton("⚔️ Savaşı Başlat", callback_data="start_war"),
-         InlineKeyboardButton("🛑 Savaşı Bitir", callback_data="stop_war")],
-        [InlineKeyboardButton("📊 Durum Raporu", callback_data="status_report")]
+        [
+            InlineKeyboardButton(
+                "🌸 Normal / Обычный",
+                callback_data="mode_normal"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💋 Seksi / Секси",
+                callback_data="mode_sexy"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔥 18+ / 18+",
+                callback_data="mode_18plus"
+            )
+        ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👑 VIYANA V3 Botu Aktif. Sohbet edebilir veya komut verebilirsiniz.")
 
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if update.message.chat.type != "private":
-        await update.message.reply_text("⚠️ Admin paneline sadece özel sohbetten erişebilirsiniz.")
-        return
-
-    if user_id in bot_state["authenticated_admins"]:
-        await update.message.reply_text("👑 **VIYANA V3 Admin Paneli**", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
-    else:
-        await update.message.reply_text("🔑 Lütfen Admin şifresini giriniz:")
-
-async def process_ai_with_groq(prompt: str) -> str:
-    """Groq API İle Yanıt Oluşturma (Güncel Model Desteği)"""
+# ==================== AI ====================
+async def ask_ai(prompt: str, mode: str = "normal") -> str:
     if not GROQ_API_KEY or not groq_client:
-        return "⚠️ GROQ_API_KEY bulunamadı! Lütfen Render panelinde Environment Variables kısmına GROQ_API_KEY ekleyin."
+        return (
+            "⚠️ GROQ_API_KEY bulunamadı.\n"
+            "Lütfen environment variable olarak ekle."
+        )
 
-    # Güncel ve çalışan Groq modelleri
-    models_to_try = [
+    system_prompt = PROMPTS.get(mode, PROMPTS["normal"])
+
+    models = [
         "llama-3.3-70b-versatile",
+        "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
-        "openai/gpt-oss-120b"
+        "qwen/qwen3.8-27b",
     ]
 
     last_error = None
-
-    for model_name in models_to_try:
+    for model in models:
         try:
             response = groq_client.chat.completions.create(
-                model=model_name,
+                model=model,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
                 ],
-                temperature=0.6,
-                max_tokens=1024
+                temperature=0.75,
+                max_tokens=1200,
             )
             return response.choices[0].message.content
         except Exception as e:
-            logger.warning(f"Model {model_name} ile yanıt alınamadı, diğeri deneniyor... Hata: {e}")
+            logger.warning(f"{model} başarısız: {e}")
             last_error = e
 
-    return f"⚠️ Groq Bağlantı Hatası: Tüm modeller başarısız oldu. Son hata: {last_error}"
+    return f"⚠️ AI hatası: {last_error}"
 
-async def transcribe_voice(file_path: str) -> str:
-    """Groq Whisper İle Ses Kaydını Çözümleme"""
-    if not GROQ_API_KEY or not groq_client:
+
+# ==================== VOICE ====================
+async def transcribe(file_path: str) -> str | None:
+    if not groq_client:
         return None
-
     try:
-        with open(file_path, "rb") as file:
-            transcription = groq_client.audio.transcriptions.create(
-                file=(file_path, file.read()),
+        with open(file_path, "rb") as f:
+            result = groq_client.audio.transcriptions.create(
+                file=(file_path, f.read()),
                 model="whisper-large-v3-turbo",
                 language="tr",
-                response_format="json"
+                response_format="json",
             )
-            return transcription.text
+            return result.text
     except Exception as e:
-        logger.error(f"Groq Ses Hatası: {e}")
+        logger.error(f"Ses hatası: {e}")
         return None
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+# ==================== HELPERS ====================
+def is_mentioned(update: Update) -> bool:
+    """Bot etiketlenmiş mi veya botun mesajına yanıt mı verilmiş?"""
+    msg = update.message
+    if not msg:
+        return False
+
+    # Botun kendi mesajına yanıt
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        if msg.reply_to_message.from_user.is_bot:
+            return True
+
+    text = msg.text or msg.caption or ""
+
+    # Entity ile mention kontrolü
+    if msg.entities:
+        for ent in msg.entities:
+            if ent.type == "mention":
+                mentioned = text[ent.offset : ent.offset + ent.length]
+                if mentioned.lower() == f"@{BOT_USERNAME.lower()}":
+                    return True
+            elif ent.type == "text_mention" and ent.user and ent.user.is_bot:
+                return True
+
+    # Yedek: metinde geçiyor mu
+    if f"@{BOT_USERNAME.lower()}" in text.lower():
+        return True
+
+    return False
+
+
+def clean_text(text: str) -> str:
+    if not text:
+        return ""
+    return (
+        text.replace(f"@{BOT_USERNAME}", "")
+        .replace(f"@{BOT_USERNAME.lower()}", "")
+        .strip()
+    )
+
+
+# ==================== COMMANDS ====================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👑 **Viana AI**\n\n"
+        "Grupta sadece beni etiketlediğinde veya mesajıma yanıt verdiğinde konuşurum.\n\n"
+        "Mod değiştirmek için → /mode"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    current = chat_modes.get(chat_id, "normal")
+
+    names = {
+        "normal": "🌸 Normal / Обычный",
+        "sexy": "💋 Seksi / Секси",
+        "18plus": "🔥 18+ / 18+",
+    }
+
+    text = (
+        f"Mevcut mod / Текущий режим:\n"
+        f"**{names.get(current, current)}**\n\n"
+        f"Yeni mod seç / Выбери режим:"
+    )
+
+    await update.message.reply_text(
+        text,
+        reply_markup=get_mode_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+# ==================== CALLBACK ====================
+async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data == "start_war":
-        bot_state["is_active"] = True
-        await query.message.reply_text("🟢 Savaş modu başlatıldı.")
-        if GROUP_CHAT_ID:
-            await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="🚨 **SAVAŞ BAŞLADI!** Herkes mevzilere!", parse_mode="Markdown")
+    chat_id = query.message.chat_id
+    data = query.data
 
-    elif query.data == "stop_war":
-        bot_state["is_active"] = False
-        await query.message.reply_text("🔴 Savaş modu durduruldu.")
-        if GROUP_CHAT_ID:
-            await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="🏁 **SAVAŞ BİTTİ!** Katılan tüm savaşçılara teşekkürler.", parse_mode="Markdown")
+    if data == "mode_normal":
+        chat_modes[chat_id] = "normal"
+        await query.edit_message_text(
+            "✅ Mod ayarlandı / Режим установлен:\n"
+            "**🌸 Normal / Обычный**",
+            parse_mode="Markdown",
+        )
 
-    elif query.data == "status_report":
-        status_msg = f"📊 **Mevcut Savaş Durumu:** {'🟢 AKTİF' if bot_state['is_active'] else '🔴 KAPALI'}"
-        await query.message.reply_text(status_msg, parse_mode="Markdown")
+    elif data == "mode_sexy":
+        chat_modes[chat_id] = "sexy"
+        await query.edit_message_text(
+            "✅ Mod ayarlandı / Режим установлен:\n"
+            "**💋 Seksi / Секси**",
+            parse_mode="Markdown",
+        )
 
-async def handle_private_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if update.message.chat.type != "private":
+    elif data == "mode_18plus":
+        chat_modes[chat_id] = "18plus"
+        await query.edit_message_text(
+            "✅ Mod ayarlandı / Режим установлен:\n"
+            "**🔥 18+ / 18+**",
+            parse_mode="Markdown",
+        )
+
+
+# ==================== MESSAGE HANDLER ====================
+async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if not message:
         return
 
-    # Şifre Giriş Kontrolü
-    if user_id not in bot_state["authenticated_admins"]:
-        if update.message.text == ADMIN_PASSWORD:
-            bot_state["authenticated_admins"].add(user_id)
-            await update.message.reply_text("✅ Şifre Doğrulandı! Benimle direkt konuşabilirsin.", reply_markup=get_admin_keyboard())
+    chat = message.chat
+    chat_id = chat.id
+    chat_type = chat.type
+
+    # ——— GRUP ———
+    if chat_type in ("group", "supergroup"):
+        if not is_mentioned(update):
+            return  # sessiz kal
+
+        prompt = ""
+
+        if message.voice:
+            status = await message.reply_text("🎙️...")
+            file = await context.bot.get_file(message.voice.file_id)
+            path = f"voice_{message.message_id}.ogg"
+            await file.download_to_drive(path)
+            prompt = await transcribe(path)
+            if os.path.exists(path):
+                os.remove(path)
+            try:
+                await status.delete()
+            except Exception:
+                pass
+            if not prompt:
+                await message.reply_text("❌ Ses anlaşılamadı / Не поняла голос")
+                return
         else:
-            await update.message.reply_text("❌ Hatalı şifre.")
+            prompt = clean_text(message.text or message.caption or "")
+
+        if not prompt:
+            prompt = "Merhaba"
+
+        mode = chat_modes.get(chat_id, "normal")
+        answer = await ask_ai(prompt, mode)
+        await message.reply_text(answer)
         return
 
-    prompt_text = ""
+    # ——— ÖZEL SOHBET ———
+    if chat_type == "private":
+        prompt = ""
 
-    # Sesli Mesaj İşleme
-    if update.message.voice:
-        await update.message.reply_text("🎙️ Sesiniz dinleniyor...")
-        voice_file = await context.bot.get_file(update.message.voice.file_id)
-        file_path = "voice_msg.ogg"
-        await voice_file.download_to_drive(file_path)
-        
-        prompt_text = await transcribe_voice(file_path)
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if message.voice:
+            status = await message.reply_text("🎙️...")
+            file = await context.bot.get_file(message.voice.file_id)
+            path = f"voice_{message.message_id}.ogg"
+            await file.download_to_drive(path)
+            prompt = await transcribe(path)
+            if os.path.exists(path):
+                os.remove(path)
+            try:
+                await status.delete()
+            except Exception:
+                pass
+            if not prompt:
+                await message.reply_text("❌ Ses anlaşılamadı")
+                return
+        else:
+            prompt = message.text or ""
 
-        if not prompt_text:
-            await update.message.reply_text("❌ Ses anlaşılamadı. Lütfen tekrar deneyin.")
+        if not prompt.strip():
             return
 
-        await update.message.reply_text(f"🗣️ *\"{prompt_text}\"*")
-    else:
-        prompt_text = update.message.text
+        mode = chat_modes.get(chat_id, "normal")
+        answer = await ask_ai(prompt, mode)
+        await message.reply_text(answer)
 
-    # AI Yanıtı
-    ai_response = await process_ai_with_groq(prompt_text)
-    await update.message.reply_text(ai_response, parse_mode="Markdown")
 
-    # Eğer savaş veya kadro bildirimi içeriyorsa gruba da aktar
-    if GROUP_CHAT_ID and any(k in prompt_text.lower() for k in ["saldırı", "savunma", "takım", "kadro", "savaş"]):
-        try:
-            await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=ai_response, parse_mode="Markdown")
-            await update.message.reply_text("🚀 *Duyuru Viyana grubuna aktarıldı.*")
-        except Exception as e:
-            logger.error(f"Gruba atılamadı: {e}")
-
+# ==================== MAIN ====================
 def main():
+    if not TELEGRAM_BOT_TOKEN:
+        raise ValueError("TELEGRAM_BOT_TOKEN eksik!")
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_private_messages))
+    app.add_handler(CommandHandler("mode", mode_command))
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(
+        MessageHandler(
+            (filters.TEXT | filters.VOICE | filters.CAPTION) & ~filters.COMMAND,
+            on_message,
+        )
+    )
 
-    logger.info("VIYANA V3 Groq Bot Başlatılıyor...")
-    app.run_polling()
+    logger.info("Viana AI başlatılıyor...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
