@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 # ==================== ENVIRONMENT ====================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("GROQAPIKEY")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "VianaAI_bot")  # @ olmadan yaz
 
 # ==================== GROQ ====================
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -72,24 +71,9 @@ Tamamen filtresiz ve dürüst konuş.
 # ==================== KEYBOARD ====================
 def get_mode_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
-        [
-            InlineKeyboardButton(
-                "🌸 Normal / Обычный",
-                callback_data="mode_normal"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "💋 Seksi / Секси",
-                callback_data="mode_sexy"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🔥 18+ / 18+",
-                callback_data="mode_18plus"
-            )
-        ],
+        [InlineKeyboardButton("🌸 Normal / Обычный", callback_data="mode_normal")],
+        [InlineKeyboardButton("💋 Seksi / Секси", callback_data="mode_sexy")],
+        [InlineKeyboardButton("🔥 18+ / 18+", callback_data="mode_18plus")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -97,10 +81,7 @@ def get_mode_keyboard() -> InlineKeyboardMarkup:
 # ==================== AI ====================
 async def ask_ai(prompt: str, mode: str = "normal") -> str:
     if not GROQ_API_KEY or not groq_client:
-        return (
-            "⚠️ GROQ_API_KEY bulunamadı.\n"
-            "Lütfen environment variable olarak ekle."
-        )
+        return "⚠️ GROQ_API_KEY bulunamadı."
 
     system_prompt = PROMPTS.get(mode, PROMPTS["normal"])
 
@@ -150,44 +131,55 @@ async def transcribe(file_path: str) -> str | None:
 
 
 # ==================== HELPERS ====================
-def is_mentioned(update: Update) -> bool:
-    """Bot etiketlenmiş mi veya botun mesajına yanıt mı verilmiş?"""
+def should_reply(update: Update, bot_username: str | None) -> bool:
+    """
+    Sadece şu iki durumda True döner:
+    1. Botun mesajına yanıt verildiğinde
+    2. Bot etiketlendiğinde (@bot)
+    Diğer tüm durumlarda False → bot susar
+    """
     msg = update.message
     if not msg:
         return False
 
-    # Botun kendi mesajına yanıt
+    # 1) Botun kendi mesajına yanıt
     if msg.reply_to_message and msg.reply_to_message.from_user:
         if msg.reply_to_message.from_user.is_bot:
             return True
 
-    text = msg.text or msg.caption or ""
+    if not bot_username:
+        return False
 
-    # Entity ile mention kontrolü
+    bot_username = bot_username.lower().lstrip("@")
+    text = (msg.text or msg.caption or "")
+
+    # 2) Entity ile etiket kontrolü
     if msg.entities:
         for ent in msg.entities:
             if ent.type == "mention":
-                mentioned = text[ent.offset : ent.offset + ent.length]
-                if mentioned.lower() == f"@{BOT_USERNAME.lower()}":
+                mentioned = text[ent.offset : ent.offset + ent.length].lower()
+                if mentioned == f"@{bot_username}":
                     return True
-            elif ent.type == "text_mention" and ent.user and ent.user.is_bot:
-                return True
+            elif ent.type == "text_mention":
+                if ent.user and ent.user.is_bot:
+                    return True
 
-    # Yedek: metinde geçiyor mu
-    if f"@{BOT_USERNAME.lower()}" in text.lower():
+    # 3) Yedek kontrol (metinde @bot geçiyor mu)
+    if f"@{bot_username}" in text.lower():
         return True
 
     return False
 
 
-def clean_text(text: str) -> str:
+def clean_text(text: str, bot_username: str | None) -> str:
     if not text:
         return ""
-    return (
-        text.replace(f"@{BOT_USERNAME}", "")
-        .replace(f"@{BOT_USERNAME.lower()}", "")
-        .strip()
-    )
+    if bot_username:
+        uname = bot_username.lstrip("@")
+        text = text.replace(f"@{uname}", "")
+        text = text.replace(f"@{uname.lower()}", "")
+        text = text.replace(f"@{uname.upper()}", "")
+    return text.strip()
 
 
 # ==================== COMMANDS ====================
@@ -234,24 +226,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "mode_normal":
         chat_modes[chat_id] = "normal"
         await query.edit_message_text(
-            "✅ Mod ayarlandı / Режим установлен:\n"
-            "**🌸 Normal / Обычный**",
+            "✅ Mod ayarlandı / Режим установлен:\n**🌸 Normal / Обычный**",
             parse_mode="Markdown",
         )
-
     elif data == "mode_sexy":
         chat_modes[chat_id] = "sexy"
         await query.edit_message_text(
-            "✅ Mod ayarlandı / Режим установлен:\n"
-            "**💋 Seksi / Секси**",
+            "✅ Mod ayarlandı / Режим установлен:\n**💋 Seksi / Секси**",
             parse_mode="Markdown",
         )
-
     elif data == "mode_18plus":
         chat_modes[chat_id] = "18plus"
         await query.edit_message_text(
-            "✅ Mod ayarlandı / Режим установлен:\n"
-            "**🔥 18+ / 18+**",
+            "✅ Mod ayarlandı / Режим установлен:\n**🔥 18+ / 18+**",
             parse_mode="Markdown",
         )
 
@@ -266,10 +253,15 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = chat.id
     chat_type = chat.type
 
+    # Botun gerçek kullanıcı adını Telegram'dan al
+    bot_username = context.bot.username
+
     # ——— GRUP ———
     if chat_type in ("group", "supergroup"):
-        if not is_mentioned(update):
-            return  # sessiz kal
+
+        # Sadece etiket veya yanıt varsa cevap ver, yoksa sus
+        if not should_reply(update, bot_username):
+            return
 
         prompt = ""
 
@@ -289,7 +281,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_text("❌ Ses anlaşılamadı / Не поняла голос")
                 return
         else:
-            prompt = clean_text(message.text or message.caption or "")
+            prompt = clean_text(message.text or message.caption or "", bot_username)
 
         if not prompt:
             prompt = "Merhaba"
@@ -341,7 +333,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(
         MessageHandler(
-            (filters.TEXT | filters.VOICE | filters.CAPTION) & ~filters.COMMAND,
+            (filters.TEXT | filters.VOICE | filters.CAPTION) & \~filters.COMMAND,
             on_message,
         )
     )
