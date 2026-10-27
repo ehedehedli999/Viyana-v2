@@ -11,26 +11,19 @@ from telegram.ext import (
 )
 from groq import Groq
 
-# ==================== LOGGING ====================
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ==================== ENVIRONMENT ====================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("GROQAPIKEY")
 
-# ==================== GROQ ====================
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# ==================== STATE ====================
-# chat_id → "normal" | "sexy" | "18plus"
-chat_modes: dict[int, str] = {}
+chat_modes = {}
 
-
-# ==================== PROMPTS ====================
 BASE_RULES = """
 Sen Viana AI'sın. Tatlı, zeki, samimi ve doğal konuşan bir yapay zeka asistanısın.
 
@@ -51,14 +44,12 @@ PROMPTS = {
 Nazik, tatlı, yardımcı ve hafif flörtöz ol.
 Aşırı cinsel içerik ve ağır küfür kullanma.
 """,
-
     "sexy": BASE_RULES + """
 Şu an SEKSİ / AZDIRICI MOD'dasın.
 Çok flörtöz, kışkırtıcı, tahrik edici ve cesur konuş.
 Cinsel gerilim yarat, bedeni ve duyguları tarif et.
 Sansürsüz ve açık ol.
 """,
-
     "18plus": BASE_RULES + """
 Şu an 18+ MOD'dasın.
 Hiçbir filtre, sansür veya sınır yok.
@@ -68,8 +59,7 @@ Tamamen filtresiz ve dürüst konuş.
 }
 
 
-# ==================== KEYBOARD ====================
-def get_mode_keyboard() -> InlineKeyboardMarkup:
+def get_mode_keyboard():
     keyboard = [
         [InlineKeyboardButton("🌸 Normal / Обычный", callback_data="mode_normal")],
         [InlineKeyboardButton("💋 Seksi / Секси", callback_data="mode_sexy")],
@@ -78,8 +68,7 @@ def get_mode_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-# ==================== AI ====================
-async def ask_ai(prompt: str, mode: str = "normal") -> str:
+async def ask_ai(prompt, mode="normal"):
     if not GROQ_API_KEY or not groq_client:
         return "⚠️ GROQ_API_KEY bulunamadı."
 
@@ -106,14 +95,13 @@ async def ask_ai(prompt: str, mode: str = "normal") -> str:
             )
             return response.choices[0].message.content
         except Exception as e:
-            logger.warning(f"{model} başarısız: {e}")
+            logger.warning("%s basarisiz: %s", model, e)
             last_error = e
 
     return f"⚠️ AI hatası: {last_error}"
 
 
-# ==================== VOICE ====================
-async def transcribe(file_path: str) -> str | None:
+async def transcribe(file_path):
     if not groq_client:
         return None
     try:
@@ -126,23 +114,15 @@ async def transcribe(file_path: str) -> str | None:
             )
             return result.text
     except Exception as e:
-        logger.error(f"Ses hatası: {e}")
+        logger.error("Ses hatasi: %s", e)
         return None
 
 
-# ==================== HELPERS ====================
-def should_reply(update: Update, bot_username: str | None) -> bool:
-    """
-    Sadece şu iki durumda True döner:
-    1. Botun mesajına yanıt verildiğinde
-    2. Bot etiketlendiğinde (@bot)
-    Diğer tüm durumlarda False → bot susar
-    """
+def should_reply(update, bot_username):
     msg = update.message
     if not msg:
         return False
 
-    # 1) Botun kendi mesajına yanıt
     if msg.reply_to_message and msg.reply_to_message.from_user:
         if msg.reply_to_message.from_user.is_bot:
             return True
@@ -151,9 +131,8 @@ def should_reply(update: Update, bot_username: str | None) -> bool:
         return False
 
     bot_username = bot_username.lower().lstrip("@")
-    text = (msg.text or msg.caption or "")
+    text = msg.text or msg.caption or ""
 
-    # 2) Entity ile etiket kontrolü
     if msg.entities:
         for ent in msg.entities:
             if ent.type == "mention":
@@ -164,14 +143,13 @@ def should_reply(update: Update, bot_username: str | None) -> bool:
                 if ent.user and ent.user.is_bot:
                     return True
 
-    # 3) Yedek kontrol (metinde @bot geçiyor mu)
     if f"@{bot_username}" in text.lower():
         return True
 
     return False
 
 
-def clean_text(text: str, bot_username: str | None) -> str:
+def clean_text(text, bot_username):
     if not text:
         return ""
     if bot_username:
@@ -182,8 +160,7 @@ def clean_text(text: str, bot_username: str | None) -> str:
     return text.strip()
 
 
-# ==================== COMMANDS ====================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update, context):
     text = (
         "👑 **Viana AI**\n\n"
         "Grupta sadece beni etiketlediğinde veya mesajıma yanıt verdiğinde konuşurum.\n\n"
@@ -192,7 +169,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def mode_command(update, context):
     chat_id = update.effective_chat.id
     current = chat_modes.get(chat_id, "normal")
 
@@ -215,8 +192,7 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ==================== CALLBACK ====================
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def on_callback(update, context):
     query = update.callback_query
     await query.answer()
 
@@ -243,8 +219,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# ==================== MESSAGE HANDLER ====================
-async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def on_message(update, context):
     message = update.message
     if not message:
         return
@@ -252,14 +227,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = message.chat
     chat_id = chat.id
     chat_type = chat.type
-
-    # Botun gerçek kullanıcı adını Telegram'dan al
     bot_username = context.bot.username
 
-    # ——— GRUP ———
     if chat_type in ("group", "supergroup"):
-
-        # Sadece etiket veya yanıt varsa cevap ver, yoksa sus
         if not should_reply(update, bot_username):
             return
 
@@ -291,7 +261,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(answer)
         return
 
-    # ——— ÖZEL SOHBET ———
     if chat_type == "private":
         prompt = ""
 
@@ -321,7 +290,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(answer)
 
 
-# ==================== MAIN ====================
 def main():
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN eksik!")
@@ -331,14 +299,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mode", mode_command))
     app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(
-        MessageHandler(
-            (filters.TEXT | filters.VOICE | filters.CAPTION) & \~filters.COMMAND,
-            on_message,
-        )
-    )
 
-    logger.info("Viana AI başlatılıyor...")
+    message_filter = (filters.TEXT | filters.VOICE | filters.CAPTION) & \~filters.COMMAND
+    app.add_handler(MessageHandler(message_filter, on_message))
+
+    logger.info("Viana AI baslatiliyor...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
