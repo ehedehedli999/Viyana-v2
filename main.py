@@ -155,10 +155,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    # Render-dəki Environment Variable-dən tokeni oxuyur
-    token = os.getenv("BOT_TOKEN")
+    # Render-də yazdığın dəqiq Environment adını bura yazırıq: TELEGRAM_BOT_TOKEN
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        logger.error("BOT_TOKEN tapılmadı! Zəhmət olmasa Environment variables yoxlayın.")
+        logger.error("TELEGRAM_BOT_TOKEN tapılmadı! Zəhmət olmasa Environment variables yoxlayın.")
         return
 
     app = ApplicationBuilder().token(token).build()
